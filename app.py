@@ -3,91 +3,94 @@ import pandas as pd
 import plotly.express as px
 import joblib
 
-# 設定網頁標題與佈局
-st.set_page_config(page_title="飯店預訂預測系統", layout="wide")
+# 1. 設定網頁標題與佈局
+st.set_page_config(page_title="飯店預訂預測與分析系統", layout="wide")
 
-# 快取載入資料的函數，避免每次操作都重新讀取
+# 2. 快取載入資料的函數
 @st.cache_data
 def load_data():
     df = pd.read_csv('hotel_bookings.csv')
-    # 簡單清理以供圖表展示
+    # 基礎清洗
     df['children'] = df['children'].fillna(0)
-    df = df[~((df['adults'] + df['children'] + df['babies']) == 0)]
+    # 為了方便篩選，確保日期相關欄位正確
     return df
 
 # 載入模型與資料
 try:
     model = joblib.load('nb_model.pkl')
-    df = load_data()
+    df_raw = load_data()
 except FileNotFoundError:
     st.error("找不到模型檔案 (nb_model.pkl) 或資料集 (hotel_bookings.csv)，請先執行訓練程式碼！")
     st.stop()
 
-# 建立兩個分頁
-tab1, tab2 = st.tabs(["📊 探索性資料分析 (EDA)", "🤖 訂單取消預測模型"])
+# --- 側邊欄：全域篩選器 (跟房價網頁一樣的功能) ---
+st.sidebar.header("📂 全域數據篩選")
+hotel_choice = st.sidebar.multiselect("選擇飯店類型", options=df_raw['hotel'].unique(), default=df_raw['hotel'].unique())
+cancel_choice = st.sidebar.selectbox("訂單狀態", ["全部", "僅限已入住 (0)", "僅限已取消 (1)"])
 
-# ================= 分頁 1：資料視覺化 =================
+# 執行篩選邏輯
+df_filtered = df_raw[df_raw['hotel'].isin(hotel_choice)]
+if cancel_choice == "僅限已入住 (0)":
+    df_filtered = df_filtered[df_filtered['is_canceled'] == 0]
+elif cancel_choice == "僅限已取消 (1)":
+    df_filtered = df_filtered[df_filtered['is_canceled'] == 1]
+
+# --- 主畫面佈局 ---
+tab1, tab2, tab3 = st.tabs(["🔍 數據探索 (Data Explorer)", "📊 統計圖表 (EDA)", "🤖 預測模型"])
+
+# ================= 分頁 1：數據探索 (新增加的功能) =================
 with tab1:
-    st.title("探索性資料分析 (EDA)")
+    st.title("飯店原始資料預覽與篩選")
+    st.write(f"目前顯示：共有 **{len(df_filtered)}** 筆資料符合篩選條件")
     
+    # 顯示指標 (Metric)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("平均房價 (ADR)", f"${df_filtered['adr'].mean():.2f}")
+    m2.metric("平均提前預訂天數", f"{int(df_filtered['lead_time'].mean())} 天")
+    m3.metric("總特殊需求數", int(df_filtered['total_of_special_requests'].sum()))
+
+    # 顯示資料表格 (Dataframe)
+    st.subheader("篩選後的資料明細")
+    st.dataframe(df_filtered, height=400) # 跟房價網頁一樣可以縮放、排序
+
+    # 下載按鈕
+    csv = df_filtered.to_csv(index=False).encode('utf-8')
+    st.download_button(label="📥 下載篩選後的資料 (CSV)", data=csv, file_name='filtered_hotel_data.csv', mime='text/csv')
+
+# ================= 分頁 2：統計圖表 =================
+with tab2:
+    st.title("資料視覺化分析")
     col1, col2 = st.columns(2)
     with col1:
-        # 圖表 1：各飯店類型的取消比例
-        st.subheader("不同飯店類型的取消狀況")
-        fig1 = px.histogram(df, x="hotel", color="is_canceled", 
-                            barmode="group", 
-                            labels={'is_canceled': '是否取消 (1=是, 0=否)', 'hotel': '飯店類型'},
-                            color_discrete_sequence=['#2ecc71', '#e74c3c'])
+        st.subheader("取消狀況比例")
+        fig1 = px.pie(df_filtered, names='is_canceled', hole=0.4, color_discrete_sequence=['#2ecc71', '#e74c3c'])
         st.plotly_chart(fig1, use_container_width=True)
-
     with col2:
-        # 圖表 2：前置時間 (Lead Time) 與取消的關係
-        st.subheader("前置時間分佈 (入住 vs 取消)")
-        fig2 = px.box(df, x="is_canceled", y="lead_time", 
-                      color="is_canceled",
-                      labels={'is_canceled': '是否取消', 'lead_time': '前置時間 (天)'})
+        st.subheader("前置天數 vs 取消狀態")
+        fig2 = px.box(df_filtered, x="is_canceled", y="lead_time", color="is_canceled")
         st.plotly_chart(fig2, use_container_width=True)
 
-# ================= 分頁 2：機器學習預測 =================
-with tab2:
-    st.title("訂單狀態預測器")
-    st.write("請調整下方滑桿或輸入數值，預測該筆訂單最終是否會被取消。")
+# ================= 分頁 3：預測模型 (保持原有預測功能) =================
+with tab3:
+    st.title("🤖 預測該筆訂單是否會被取消")
     
-    st.sidebar.header("輸入客房訂單特徵")
-    # 建立輸入介面
-    lead_time = st.sidebar.slider("前置時間 (Lead Time - 天)", 0, 700, 30)
-    special_requests = st.sidebar.slider("特殊需求總數", 0, 5, 0)
-    parking_spaces = st.sidebar.selectbox("需要停車位數量", [0, 1, 2, 3])
-    booking_changes = st.sidebar.slider("訂單變更次數", 0, 20, 0)
-    previous_cancellations = st.sidebar.number_input("過往取消次數", min_value=0, max_value=26, value=0)
-    is_repeated_guest = st.sidebar.radio("是否為回頭客？", ("否", "是"))
+    with st.expander("點擊輸入訂單資訊進行預測", expanded=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            lt = st.number_input("前置天數 (Lead Time)", value=30)
+            sr = st.slider("特殊需求數量", 0, 5, 0)
+            ps = st.selectbox("停車位需求", [0, 1, 2])
+        with c2:
+            bc = st.number_input("訂單變更次數", value=0)
+            pc = st.number_input("過往取消次數", value=0)
+            rg = st.radio("是否為回頭客", [0, 1])
 
-    # 轉換回頭客為模型需要的數值
-    is_repeated_guest_val = 1 if is_repeated_guest == "是" else 0
-
-    # 組織預測資料
-    input_data = pd.DataFrame({
-        'lead_time': [lead_time],
-        'total_of_special_requests': [special_requests],
-        'required_car_parking_spaces': [parking_spaces],
-        'booking_changes': [booking_changes],
-        'previous_cancellations': [previous_cancellations],
-        'is_repeated_guest': [is_repeated_guest_val]
-    })
-
-    # 顯示目前輸入的數值
-    st.subheader("目前的訂單特徵：")
-    st.dataframe(input_data)
-
-    # 預測按鈕
-    if st.button("執行預測", type="primary"):
-        prediction = model.predict(input_data)[0]
-        
-        st.markdown("---")
-        if prediction == 1:
-            st.error("⚠️ 模型預測結果：**此訂單高機率會被【取消】**")
-            st.info("💡 商業建議：建議客服人員主動聯繫確認，或要求收取預付訂金。")
+    if st.button("執行模型預測", type="primary"):
+        input_data = pd.DataFrame([[lt, sr, ps, bc, pc, rg]], 
+                                  columns=['lead_time', 'total_of_special_requests', 'required_car_parking_spaces', 
+                                           'booking_changes', 'previous_cancellations', 'is_repeated_guest'])
+        res = model.predict(input_data)[0]
+        if res == 1:
+            st.error("🚨 預測結果：此訂單極大機率會被【取消】！")
         else:
-            st.success("✅ 模型預測結果：**此訂單將會順利【入住】**")
-            st.info("💡 商業建議：這是一筆穩定訂單，可準備相關迎賓設施。")
-            
+            st.success("✨ 預測結果：此訂單將會順利【入住】。")
